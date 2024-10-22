@@ -16,6 +16,23 @@
       "message": "Verified on foster. Necessary because patchelf breaks tegra prebuilts, presumably due to the dwarf debug symbols appended to them.",
       "revId": "1781c2109dca66d93d469aadc4a4c7e267bb6031",
       "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    },
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "48d5e1ea_3baa3c69",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 2
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 16185
+      },
+      "writtenOn": "2024-10-22T04:27:09Z",
+      "side": 1,
+      "message": "talked to mike after the fact - I missed the discord convo\u0027s ending apparently.\n\nThe plan will be - merge this cycle, file patchelf ticket or move to sigscan\u0027s if possible - do not merge for 23.",
+      "revId": "1781c2109dca66d93d469aadc4a4c7e267bb6031",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
     }
   ],
   "submitRequirementResults": []
