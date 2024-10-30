@@ -1,0 +1,21 @@
+{
+  "comments": [
+    {
+      "unresolved": false,
+      "key": {
+        "uuid": "7b52af3a_013fdfc0",
+        "filename": "/PATCHSET_LEVEL",
+        "patchSetId": 1
+      },
+      "lineNbr": 0,
+      "author": {
+        "id": 14048
+      },
+      "writtenOn": "2024-10-30T05:49:51Z",
+      "side": 1,
+      "message": "Tegra no longer requires this. Can\u0027t personally speak to any other users of this, however.",
+      "revId": "e896f6b0e53ebc432fed637856458c9a3f4370e8",
+      "serverId": "1ec6b3db-b2c1-4fa4-84a2-4c7efe89ba71"
+    }
+  ]
+}
