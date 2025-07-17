@@ -35,20 +35,24 @@ static constexpr const char kLongLegacyError[] =
 static_assert(sizeof(kLongLegacyError) < prop_info::kLongLegacyErrorBufferSize,
               "Error message for long properties read by legacy libc must fit within 56 chars");
 
-prop_info::prop_info(const char* name, uint32_t namelen, const char* value, uint32_t valuelen) {
+prop_info::prop_info(const char* name, uint32_t namelen, const char* value, uint32_t valuelen,
+                     bool replaced, bool removed) {
   memcpy(this->name, name, namelen);
   this->name[namelen] = '\0';
-  atomic_store_explicit(&this->serial, valuelen << 24, memory_order_relaxed);
+  uint32_t flags = (replaced ? kReplacedFlag : 0) | (removed ? kRemovedFlag : 0);
+  atomic_store_explicit(&this->serial, (valuelen << 24) | flags, memory_order_relaxed);
   memcpy(this->value, value, valuelen);
   this->value[valuelen] = '\0';
 }
 
-prop_info::prop_info(const char* name, uint32_t namelen, uint32_t long_offset) {
+prop_info::prop_info(const char* name, uint32_t namelen, uint32_t long_offset,
+                     bool replaced, bool removed) {
   memcpy(this->name, name, namelen);
   this->name[namelen] = '\0';
 
   auto error_value_len = sizeof(kLongLegacyError) - 1;
-  atomic_store_explicit(&this->serial, error_value_len << 24 | kLongFlag, memory_order_relaxed);
+  uint32_t flags = kLongFlag | (replaced ? kReplacedFlag : 0) | (removed ? kRemovedFlag : 0);
+  atomic_store_explicit(&this->serial, (error_value_len << 24) | flags, memory_order_relaxed);
   memcpy(this->long_property.error_message, kLongLegacyError, sizeof(kLongLegacyError));
 
   this->long_property.offset = long_offset;

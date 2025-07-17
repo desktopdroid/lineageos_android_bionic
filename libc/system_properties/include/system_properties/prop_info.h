@@ -46,6 +46,8 @@ struct prop_info {
   // We borrow the 2nd from the top byte for extra flags, and use the bottom most bit of that for
   // our first user, kLongFlag.
   static constexpr uint32_t kLongFlag = 1 << 16;
+  static constexpr uint32_t kReplacedFlag = 1 << 17;
+  static constexpr uint32_t kRemovedFlag = 1 << 18;
 
   // The error message fits in part of a union with the previous 92 char property value so there
   // must be room left over after the error message for the offset to the new longer property value
@@ -71,6 +73,14 @@ struct prop_info {
     return (load_const_atomic(&serial, memory_order_relaxed) & kLongFlag) != 0;
   }
 
+  bool is_replaced() const {
+    return (load_const_atomic(&serial, memory_order_relaxed) & kReplacedFlag) != 0;
+  }
+
+  bool is_removed() const {
+    return (load_const_atomic(&serial, memory_order_relaxed) & kRemovedFlag) != 0;
+  }
+
   const char* long_value() const {
     // We can't store pointers here since this is shared memory that will have different absolute
     // pointers in different processes.  We don't have data_ from prop_area, but since we know
@@ -79,8 +89,17 @@ struct prop_info {
     return reinterpret_cast<const char*>(this) + long_property.offset;
   }
 
-  prop_info(const char* name, uint32_t namelen, const char* value, uint32_t valuelen);
-  prop_info(const char* name, uint32_t namelen, uint32_t long_offset);
+  const char* value_ptr() const {
+    if (is_long())
+      return long_value();
+
+    return value;
+  }
+
+  prop_info(const char* name, uint32_t namelen, const char* value, uint32_t valuelen,
+            bool replaced = false, bool removed = false);
+  prop_info(const char* name, uint32_t namelen, uint32_t long_offset,
+            bool replaced = false, bool removed = false);
 
  private:
   BIONIC_DISALLOW_IMPLICIT_CONSTRUCTORS(prop_info);

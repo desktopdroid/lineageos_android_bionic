@@ -29,6 +29,7 @@
 #include "system_properties/system_properties.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <private/android_filesystem_config.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -52,6 +53,145 @@
 #define SERIAL_DIRTY(serial) ((serial)&1)
 #define SERIAL_VALUE_LEN(serial) ((serial) >> 24)
 #define APPCOMPAT_PREFIX "ro.appcompat_override."
+
+typedef void (*propfn_type)(const prop_info* pi, void* cookie);
+
+struct replace_entry {
+  const char* app;
+  const char* name;
+  const char* value;
+  char data[512];
+  prop_info* pi;
+};
+
+static int init_prop_info(replace_entry *rep) {
+  bool remove = false;
+  if (rep->value == nullptr) {
+    remove = true;
+    rep->value = "";
+  }
+
+  uint32_t namelen = strlen(rep->name);
+  uint32_t valuelen = strlen(rep->value);
+  uint32_t offset = 0;
+
+  void* const p = &rep->data;
+  offset += sizeof(prop_info) + namelen + 1;
+
+  if (offset > sizeof(rep->data)) {
+    async_safe_format_log(ANDROID_LOG_ERROR, "SystemProperties",
+                          "Name too big: %s", rep->name);
+    return -1;
+  }
+
+  if (valuelen < PROP_VALUE_MAX) {
+    rep->pi = new (p) prop_info(rep->name, namelen, rep->value, valuelen,
+                                true, remove);
+    return 0;
+  }
+
+  uint32_t long_value_offset = offset;
+  char* long_location = &rep->data[offset];
+  offset += valuelen + 1;
+
+  if (offset > sizeof(rep->data)) {
+    async_safe_format_log(ANDROID_LOG_ERROR, "SystemProperties",
+                          "Value too big: %s", rep->value);
+    return -1;
+  }
+
+  memcpy(long_location, rep->value, valuelen);
+  long_location[valuelen] = '\0';
+
+  rep->pi = new (p) prop_info(rep->name, namelen, long_value_offset,
+                              true, remove);
+
+  return 0;
+}
+
+static replace_entry replacements[] = {
+};
+
+void Cmdline(pid_t pid, char* buf, size_t buf_size) {
+  memset(buf, 0, buf_size);
+
+  char path[64];
+  snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    async_safe_format_log(ANDROID_LOG_ERROR, "SystemProperties",
+                          "Failed to open cmdline for pid %d", pid);
+    return;
+  }
+
+  ssize_t len = read(fd, buf, buf_size - 1);
+  close(fd);
+
+  ssize_t last_non_null = -1;
+  for (ssize_t i = 0; i < len - 1; i++) {
+    if (buf[i] == '\0') {
+      buf[i] = ' ';
+    } else {
+      last_non_null = i;
+    }
+  }
+
+  buf[last_non_null + 1] = '\0';
+}
+
+const replace_entry* FindReplacement(const char* cmdline, const char* name) {
+  for (auto & rep : replacements) {
+    if (rep.pi == nullptr) {
+      int ret = init_prop_info(&rep);
+      if (ret) {
+        continue;
+      }
+    }
+
+    if (strcmp(name, rep.pi->name) == 0 &&
+        strcmp(cmdline, rep.app) == 0) {
+      return &rep;
+    }
+  }
+
+  return NULL;
+}
+
+const prop_info* Replace(const char *cmdline, const prop_info* pi,
+                         const char* name) {
+  const replace_entry* rep = FindReplacement(cmdline, name);
+  if (rep == nullptr) {
+    async_safe_format_log(ANDROID_LOG_ERROR,
+                          "SystemProperties",
+                          "cmdline: %s, name: %s, value: %s",
+                          cmdline, name, pi ? pi->value_ptr() : nullptr);
+    return pi;
+  }
+
+  const char* value = nullptr;
+  const char* new_value = nullptr;
+  bool removed = rep->pi->is_removed();
+
+  if (pi != nullptr && pi != rep->pi) {
+    value = pi->value_ptr();
+  }
+
+  if (!removed) {
+    new_value = rep->pi->value_ptr();
+  }
+
+  async_safe_format_log(ANDROID_LOG_ERROR,
+                        "SystemProperties",
+                        "app: %s, name: %s, value: %s, new_value: %s",
+                        rep->app, name, value, new_value);
+
+  if (removed) {
+    return nullptr;
+  }
+
+  return rep->pi;
+}
 
 static bool is_dir(const char* pathname) {
   struct stat info;
@@ -170,7 +310,11 @@ const prop_info* SystemProperties::Find(const char* name) {
     return nullptr;
   }
 
-  return pa->find(name);
+  pid_t pid = getpid();
+  char cmdline[256];
+  Cmdline(pid, cmdline, sizeof(cmdline));
+
+  return Replace(cmdline, pa->find(name), name);
 }
 
 static bool is_appcompat_override(const char* name) {
@@ -275,6 +419,11 @@ int SystemProperties::Update(prop_info* pi, const char* value, unsigned int len)
   if (!initialized_) {
     return -1;
   }
+
+  if (pi->is_replaced()) {
+    return -1;
+  }
+
   bool have_override = appcompat_override_contexts_ != nullptr;
 
   prop_area* serial_pa = contexts_->GetSerialPropArea();
@@ -468,12 +617,66 @@ const prop_info* SystemProperties::FindNth(unsigned n) {
   return state.result;
 }
 
-int SystemProperties::Foreach(void (*propfn)(const prop_info* pi, void* cookie), void* cookie) {
+struct replace_pi {
+  const char* cmdline;
+  propfn_type propfn;
+  void* cookie;
+
+  explicit replace_pi(const char* cmdline, propfn_type propfn, void* cookie)
+    : cmdline(cmdline), propfn(propfn), cookie(cookie) {}
+
+  static void fn(const prop_info* pi, void* inner_cookie) {
+    replace_pi* self = reinterpret_cast<replace_pi*>(inner_cookie);
+
+    const prop_info* replaced_pi = Replace(self->cmdline, pi, pi->name);
+
+    /*
+      * If the passed in prop_info is equal to the replacement,
+      * there's no replacement, and the prop is not removed.
+      * Otherwise, there is a replacement, or the prop needs to be
+      * removed.
+      * Skip the replacements and removals here as they will be handled
+      * separately at the end.
+      * If we included replacements here, we wouldn't be able to check
+      * which props were already reported here, and we would have
+      * duplicates when going over all the replacements to find the
+      * new props.
+      */
+    if (pi != replaced_pi) {
+      return;
+    }
+
+    self->propfn(pi, self->cookie);
+  }
+};
+
+int SystemProperties::Foreach(propfn_type propfn, void* cookie) {
   if (!initialized_) {
     return -1;
   }
 
-  contexts_->ForEach(propfn, cookie);
+  pid_t pid = getpid();
+  char cmdline[256];
+  Cmdline(pid, cmdline, sizeof(cmdline));
+
+  struct replace_pi state(cmdline, propfn, cookie);
+  contexts_->ForEach(replace_pi::fn, &state);
+
+  /*
+   * Go over the replacements and add them at the end of the properties.
+   * Reuse the replace function for the logging and cmdline checks,
+   * but pass a nullptr for the existing prop_info.
+   * Only disadvantage is that we can't print the previous value of the
+   * prop, because we can't track them in the previous code.
+   */
+  for (const auto & rep : replacements) {
+    const auto pi = Replace(cmdline, nullptr, rep.name);
+    if (pi == nullptr) {
+      continue;
+    }
+
+    propfn(pi, cookie);
+  }
 
   return 0;
 }
