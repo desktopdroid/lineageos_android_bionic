@@ -383,7 +383,10 @@ android_fdsan_error_level android_fdsan_set_error_level_from_property(
   return data.result;
 }
 
+extern "C" void __unregister_selinux_fd(int fd);
+
 int close(int fd) {
+  __unregister_selinux_fd(fd);
   int rc = android_fdsan_close_with_tag(fd, 0);
   if (rc == -1 && errno == EINTR) {
     return 0;
